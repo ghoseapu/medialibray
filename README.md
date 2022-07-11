@@ -402,3 +402,4 @@ Next, add subscription to /app/javascript/components/Subscription/operations.gra
 Next, create the Subscription component
 The last step is to add Subscription component to Library at the end of the last div inside Query component
 
+### Mutations
