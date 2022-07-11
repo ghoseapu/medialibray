@@ -239,7 +239,7 @@ RSpec.describe Types::QueryType do
     end
 
     subject(:result) do
-      MartianLibrarySchema.execute(query).as_json
+      ApuLibrarySchema.execute(query).as_json
     end
 
     it "returns all items" do
@@ -267,3 +267,138 @@ module Types
   end
 end
 ```
+
+### Implementing real-time updates
+
+It would be great for us to have the list updated when we (users) add a new item or change an existing item. GraphQL subscriptions take care of it.
+
+Subscription is a mechanism for delivering server-initiated updates to the client. For this Rails application, we can use ActionCable for transport.
+
+#### Laying the cable
+
+First, we should create app/graphql/types/subscription_type.rb and register the subscription, which is going to be triggered when the new item is added.
+
+```
+# app/graphql/types/subscription_type.rb
+
+module Types
+  class SubscriptionType < GraphQL::Schema::Object
+    field :item_added, Types::ItemType, null: false, description: "An item was added"
+
+    def item_added; end
+  end
+end
+```
+
+Second, we should configure our schema to use ActionCableSubscriptions and look for the available subscriptions in the SubscriptionType:
+
+```
+# app/graphql/apu_library_schema.rb
+
+class ApuLibrarySchema < GraphQL::Schema
+  use GraphQL::Subscriptions::ActionCableSubscriptions
+
+  mutation(Types::MutationType)
+  query(Types::QueryType)
+  subscription(Types::SubscriptionType)
+end
+```
+
+Third, we should generate an ActionCable channel for handling subscribed clients:
+
+```
+rails g channel GraphqlChannel
+```
+
+```
+# app/channels/graphql_channel.rb
+
+class GraphqlChannel < ApplicationCable::Channel
+  def subscribed
+    @subscription_ids = []
+  end
+
+  def execute(data)
+    result = execute_query(data)
+
+    payload = {
+      result: result.subscription? ? { data: nil } : result.to_h,
+      more: result.subscription?
+    }
+
+    @subscription_ids << context[:subscription_id] if result.context[:subscription_id]
+
+    transmit(payload)
+  end
+
+  def unsubscribed
+    @subscription_ids.each do |sid|
+      ApuLibrarySchema.subscriptions.delete_subscription(sid)
+    end
+  end
+
+  private
+
+  def execute_query(data)
+    ApuLibrarySchema.execute(
+      query: data["query"],
+      context: context,
+      variables: data["variables"],
+      operation_name: data["operationName"]
+    )
+  end
+
+  def context
+    {
+      current_user_id: current_user&.id,
+      current_user: current_user,
+      channel: self
+    }
+  end
+end
+```
+
+Now we need to add a way to fetch current user in our channel.
+
+```
+# app/channels/application_cable/connection.rb
+
+module ApplicationCable
+  class Connection < ActionCable::Connection::Base
+    identified_by :current_user
+
+    def connect
+      self.current_user = current_user
+    end
+
+    private
+
+    def current_user
+      token = request.params[:token].to_s
+      email = Base64.decode64(token)
+      User.find_by(email: email)
+    end
+  end
+end
+```
+
+### Plugin in
+
+Install some new modules to deal with Subscriptions via ActionCable:
+
+```
+yarn add actioncable graphql-ruby-client
+```
+
+Update /app/javascript/utils/apollo.js to add some magic!
+
+Create a new component:
+
+```
+npx @hellsquirrel/create-gql-component create /app/javascript/components/Subscription
+```
+
+Next, add subscription to /app/javascript/components/Subscription/operations.graphql
+Next, create the Subscription component
+The last step is to add Subscription component to Library at the end of the last div inside Query component
+
